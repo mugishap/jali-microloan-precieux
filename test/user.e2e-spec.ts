@@ -19,7 +19,7 @@ describe('UserController (e2e)', () => {
         prisma = moduleFixture.get<PrismaService>(PrismaService);
         await app.init();
 
-        // Get admin token
+        // Get the admin token
         const loginResponse = await request(app.getHttpServer())
             .post('/auth/login')
             .send({
