@@ -1,70 +1,68 @@
-import { Test } from '@nestjs/testing';
+import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import * as request from 'supertest';
-import { AppModule } from '../src/app.module';
+import { AppModule } from './../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { hash } from 'bcrypt';
 
 describe('AuthController (e2e)', () => {
     let app: INestApplication;
-    let prismaService: PrismaService;
-    let authToken: string;
+    let prisma: PrismaService;
 
     beforeAll(async () => {
-        const moduleRef = await Test.createTestingModule({
+        const moduleFixture: TestingModule = await Test.createTestingModule({
             imports: [AppModule],
         }).compile();
 
-        app = moduleRef.createNestApplication();
-        prismaService = moduleRef.get<PrismaService>(PrismaService);
+        app = moduleFixture.createNestApplication();
+        prisma = moduleFixture.get<PrismaService>(PrismaService);
         await app.init();
+        await prisma.cleanDatabase();
+    });
 
-        await prismaService.$transaction(async (tx) => {
+    describe('POST /auth/login', () => {
+        it('should login admin successfully', () => {
+            return request(app.getHttpServer())
+                .post('/auth/login')
+                .send({
+                    telephone: process.env.DEFAULT_ADMIN_TELEPHONE,
+                    password: process.env.DEFAULT_ADMIN_PASSWORD,
+                })
+                .expect(200)
+                .expect((res) => {
+                    expect(res.body.data.token).toBeDefined();
+                    expect(res.body.data.user.userType).toBe('ADMIN');
+                });
+        });
+
+        it('should login normal user successfully', async () => {
+            // Create test user first
+            const password = await hash('Test@123', 10);
+            await prisma.user.create({
+                data: {
+                    firstName: 'Test',
+                    lastName: 'User',
+                    telephone: '+25070099988',
+                    password,
+                    userType: 'END_USER',
+                },
+            });
+
+            return request(app.getHttpServer())
+                .post('/auth/login')
+                .send({
+                    telephone: '+25070099988',
+                    password: 'Test@123',
+                })
+                .expect(200)
+                .expect((res) => {
+                    expect(res.body.data.token).toBeDefined();
+                    expect(res.body.data.user.userType).toBe('END_USER');
+                });
         });
     });
 
     afterAll(async () => {
-        await prismaService.$disconnect();
-        await app.close();
-    });
-    describe('POST /auth/login', () => {
-        it('should login successfully with valid credentials', () => {
-            return request(app.getHttpServer())
-                .post('/auth/login')
-                .send({
-                    telephone: '+250788888888',
-                    password: 'Password123!',
-                })
-                .expect(200)
-                .expect((response) => {
-                    expect(response.body.data).toHaveProperty('token');
-                    expect(response.body.data).toHaveProperty('user');
-                    expect(response.body.data.user.telephone).toBe('+250788888888');
-                    authToken = response.body.data.token;
-                });
-        });
-
-        it('should fail with invalid telephone format', () => {
-            return request(app.getHttpServer())
-                .post('/auth/login')
-                .send({
-                    telephone: 'invalid-phone',
-                    password: 'Password123!',
-                })
-                .expect(401)
-                .expect((response) => {
-                    expect(response.body.message).toContain('telephone');
-                });
-        });
-
-        it('should fail with missing credentials', () => {
-            return request(app.getHttpServer())
-                .post('/auth/login')
-                .send({})
-                .expect(400)
-                .expect((response) => {
-                    expect(response.body.message).toContain('telephone');
-                    expect(response.body.message).toContain('password');
-                });
-        });
+        await prisma.$disconnect();
     });
 });

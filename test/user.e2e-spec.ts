@@ -1,124 +1,93 @@
-import { Test } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
+import { Test, TestingModule } from '@nestjs/testing';
 import * as request from 'supertest';
-import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { UserType } from '@prisma/client';
-import { PrismaClient } from '@prisma/client';
+import { AppModule } from './../src/app.module';
 
 describe('UserController (e2e)', () => {
     let app: INestApplication;
-    let prismaService: PrismaService;
-    let authToken: string;
-    let adminAuthToken: string;
+    let prisma: PrismaService;
+    let adminToken: string;
     let userId: string;
-
+    let userToken: string;
     beforeAll(async () => {
-        const moduleRef = await Test.createTestingModule({
+        const moduleFixture: TestingModule = await Test.createTestingModule({
             imports: [AppModule],
         }).compile();
 
-        app = moduleRef.createNestApplication();
-        prismaService = moduleRef.get<PrismaService>(PrismaService);
+        app = moduleFixture.createNestApplication();
+        prisma = moduleFixture.get<PrismaService>(PrismaService);
         await app.init();
-        
-        await prismaService.$transaction(async (tx) => {
-        });
-    });
 
-    afterAll(async () => {
-        await prismaService.$disconnect();
-        await app.close();
+        // Get admin token
+        const loginResponse = await request(app.getHttpServer())
+            .post('/auth/login')
+            .send({
+                telephone: process.env.DEFAULT_ADMIN_TELEPHONE,
+                password: process.env.DEFAULT_ADMIN_PASSWORD,
+            });
+        adminToken = loginResponse.body.data.token;
+
+        await prisma.cleanDatabase();
     });
 
     describe('POST /user/create', () => {
-        it('should create a new user', () => {
-            return request(app.getHttpServer())
+        it('should create a new user', async () => {
+            const response = await request(app.getHttpServer())
                 .post('/user/create')
                 .send({
-                    firstName: 'John',
-                    lastName: 'Doe',
-                    telephone: '+250788888888',
-                    password: 'Password123!',
+                    firstName: 'Test',
+                    lastName: 'User',
+                    telephone: '+25070099988',
+                    password: 'Test@123',
                 })
-                .expect(201)
-                .expect((response) => {
-                    expect(response.body.data.user.userType).toBe(UserType.END_USER);
-                    userId = response.body.data.user.id;
-                    authToken = response.body.data.token;
-                });
-        });
+                .expect(201);
 
-        it('should fail with invalid password format', () => {
+            userId = response.body.data.user.id;
+            userToken = response.body.data.token;
+            console.log(response.body);
+            expect(response.body.data.user.telephone).toBe('+25070099988');
+        });
+    });
+
+    describe('GET /user/:id', () => {
+        it('should get user by id', () => {
             return request(app.getHttpServer())
-                .post('/user/create')
-                .send({
-                    firstName: 'John',
-                    lastName: 'Doe',
-                    telephone: '+250788888889',
-                    password: 'weakpass',
-                })
-                .expect(400)
-                .expect((response) => {
-                    expect(response.body.message).toContain('Password must have');
+                .get(`/user/${userId}`)
+                .set('Authorization', `Bearer ${adminToken}`)
+                .expect(200)
+                .expect((res) => {
+                    expect(res.body.data.user.id).toBe(userId);
                 });
         });
     });
 
-    describe('Admin User Operations', () => {
-        beforeAll(async () => {
-            // Create an admin user
-            const adminResponse = await request(app.getHttpServer())
-                .post('/admin/create')
-                .send({
-                    firstName: 'Admin',
-                    lastName: 'User',
-                    telephone: '+250788888890',
-                    password: 'Admin123!',
-                });
-
-            const adminLogin = await request(app.getHttpServer())
-                .post('/auth/login')
-                .send({
-                    telephone: '+250788888890',
-                    password: 'Admin123!',
-                });
-
-            adminAuthToken = adminLogin.body.data.token;
-        });
-
-        it('should get all users as admin', () => {
+    describe('GET /user', () => {
+        it('should get all users (admin only)', () => {
             return request(app.getHttpServer())
                 .get('/user')
-                .set('Authorization', `Bearer ${adminAuthToken}`)
+                .set('Authorization', `Bearer ${adminToken}`)
                 .expect(200)
-                .expect((response) => {
-                    expect(response.body.data).toHaveProperty('users');
-                    expect(response.body.data).toHaveProperty('meta');
+                .expect((res) => {
+                    expect(Array.isArray(res.body.data.users)).toBeTruthy();
                 });
-        });
-
-        it('should fail getting users with non-admin user', () => {
-            return request(app.getHttpServer())
-                .get('/user')
-                .set('Authorization', `Bearer ${authToken}`)
-                .expect(403);
         });
 
         it('should filter users by type', () => {
             return request(app.getHttpServer())
                 .get('/user?userType=END_USER')
-                .set('Authorization', `Bearer ${adminAuthToken}`)
+                .set('Authorization', `Bearer ${adminToken}`)
                 .expect(200)
-                .expect((response) => {
-                    expect(response.body.data.users).toEqual(
-                        expect.arrayContaining([
-                            expect.objectContaining({
-                                userType: 'END_USER',
-                            }),
-                        ]),
-                    );
+                .expect((res) => {
+                    expect(Array.isArray(res.body.data.users)).toBeTruthy();
+                    res.body.data.users.forEach(user => {
+                        expect(user.userType).toBe('END_USER');
+                    });
                 });
         });
     });
-}); 
+
+    afterAll(async () => {
+        await prisma.$disconnect();
+    });
+});

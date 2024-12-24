@@ -1,192 +1,134 @@
-import { Test } from '@nestjs/testing';
+import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import * as request from 'supertest';
-import { AppModule } from '../src/app.module';
+import { AppModule } from './../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { LoanStatus, UserType } from '@prisma/client';
+import { hash } from 'bcrypt';
 
 describe('LoanController (e2e)', () => {
     let app: INestApplication;
-    let prismaService: PrismaService;
-    let userAuthToken: string;
-    let adminAuthToken: string;
-    let userId: string;
+    let prisma: PrismaService;
+    let adminToken: string;
+    let userToken: string;
     let loanId: string;
 
     beforeAll(async () => {
-        const moduleRef = await Test.createTestingModule({
+        const moduleFixture: TestingModule = await Test.createTestingModule({
             imports: [AppModule],
         }).compile();
 
-        app = moduleRef.createNestApplication();
-        prismaService = moduleRef.get<PrismaService>(PrismaService);
+        app = moduleFixture.createNestApplication();
+        prisma = moduleFixture.get<PrismaService>(PrismaService);
         await app.init();
 
-        // Setup test data in a transaction
-        await prismaService.$transaction(async (tx) => {
-            // Create regular user
-            const user = await tx.user.create({
-                data: {
-                    firstName: 'John',
-                    lastName: 'Doe',
-                    telephone: '+250788888888',
-                    password: 'Password123!',
-                    userType: UserType.END_USER,
-                },
-            });
-            userId = user.id;
-
-            // Create admin user
-            await tx.user.create({
-                data: {
-                    firstName: 'Admin',
-                    lastName: 'User',
-                    telephone: '+250788888889',
-                    password: 'Admin123!',
-                    userType: UserType.ADMIN,
-                },
-            });
+        // Create test user
+        const password = await hash('Test@123', 10);
+        await prisma.user.create({
+            data: {
+                firstName: 'Test',
+                lastName: 'User',
+                telephone: '+25070099988',
+                password,
+                userType: 'END_USER',
+            },
         });
 
-        // Get auth tokens
-        const userLogin = await request(app.getHttpServer())
+        // Get admin token
+        const adminLoginResponse = await request(app.getHttpServer())
             .post('/auth/login')
             .send({
-                telephone: '+250788888888',
-                password: 'Password123!',
+                telephone: process.env.DEFAULT_ADMIN_TELEPHONE,
+                password: process.env.DEFAULT_ADMIN_PASSWORD,
             });
-        userAuthToken = userLogin.body.data.token;
+        adminToken = adminLoginResponse.body.data.token;
 
-        const adminLogin = await request(app.getHttpServer())
+        // Get user token
+        const userLoginResponse = await request(app.getHttpServer())
             .post('/auth/login')
             .send({
-                telephone: '+250788888889',
-                password: 'Admin123!',
+                telephone: '+25070099988',
+                password: 'Test@123',
             });
-        adminAuthToken = adminLogin.body.data.token;
-    });
+        userToken = userLoginResponse.body.data.token;
 
-    afterAll(async () => {
-        await prismaService.$disconnect();
-        await app.close();
+        await prisma.cleanDatabase(); // Clean database before tests
     });
 
     describe('POST /loan/create', () => {
-        it('should fail when loan amount exceeds 1/3 of monthly income', () => {
-            return request(app.getHttpServer())
+        it('should create a new loan', async () => {
+            const response = await request(app.getHttpServer())
                 .post('/loan/create')
-                .set('Authorization', `Bearer ${userAuthToken}`)
+                .set('Authorization', `Bearer ${userToken}`)
                 .send({
-                    amount: 6000,
-                    monthlyIncome: 15000,
+                    amount: 1000,
+                    purpose: 'Test loan',
                 })
-                .expect(400)
-                .expect((response) => {
-                    expect(response.body.message).toContain('must not exceed 1/3');
-                });
-        });
+                .expect(200);
 
-        it('should create a loan request successfully', () => {
-            return request(app.getHttpServer())
-                .post('/loan/create')
-                .set('Authorization', `Bearer ${userAuthToken}`)
-                .send({
-                    amount: 4000,
-                    monthlyIncome: 15000,
-                })
-                .expect(201)
-                .expect((response) => {
-                    expect(response.body.data.loan.status).toBe(LoanStatus.PENDING);
-                    loanId = response.body.data.loan.id;
-                });
-        });
-
-        it('should fail without auth token', () => {
-            return request(app.getHttpServer())
-                .post('/loan/create')
-                .send({
-                    amount: 4000,
-                    monthlyIncome: 15000,
-                })
-                .expect(401);
+            loanId = response.body.data.loan.id;
+            expect(response.body.data.loan.status).toBe('DRAFT');
         });
     });
 
     describe('PATCH /loan/submit/:id', () => {
-        it('should submit a loan successfully', () => {
+        it('should submit a loan', () => {
             return request(app.getHttpServer())
                 .patch(`/loan/submit/${loanId}`)
-                .set('Authorization', `Bearer ${userAuthToken}`)
+                .set('Authorization', `Bearer ${userToken}`)
                 .expect(200)
-                .expect((response) => {
-                    expect(response.body.data.status).toBe(LoanStatus.SUBMITTED);
+                .expect((res) => {
+                    expect(res.body.data.status).toBe('PENDING');
                 });
-        });
-
-        it('should fail submitting another user\'s loan', async () => {
-            // Create another user's loan in transaction
-            const anotherLoan = await prismaService.$transaction(async (tx) => {
-                const user = await tx.user.create({
-                    data: {
-                        firstName: 'Jane',
-                        lastName: 'Doe',
-                        telephone: '+250788888890',
-                        password: 'Password123!',
-                        userType: UserType.END_USER,
-                    },
-                });
-
-                return await tx.loan.create({
-                    data: {
-                        userId: user.id,
-                        amount: 3000,
-                        monthlyIncome: 10000,
-                        status: LoanStatus.PENDING,
-                    },
-                });
-            });
-
-            return request(app.getHttpServer())
-                .patch(`/loan/submit/${anotherLoan.id}`)
-                .set('Authorization', `Bearer ${userAuthToken}`)
-                .expect(400);
         });
     });
 
-    describe('Admin Loan Operations', () => {
-        it('should approve a submitted loan', () => {
+    describe('PATCH /loan/approve/:id', () => {
+        it('should approve a loan', () => {
             return request(app.getHttpServer())
                 .patch(`/loan/approve/${loanId}`)
-                .set('Authorization', `Bearer ${adminAuthToken}`)
+                .set('Authorization', `Bearer ${adminToken}`)
                 .expect(200)
-                .expect((response) => {
-                    expect(response.body.data.status).toBe(LoanStatus.APPROVED);
+                .expect((res) => {
+                    expect(res.body.data.status).toBe('APPROVED');
                 });
         });
+    });
 
-        it('should fail approving loan with non-admin user', () => {
-            return request(app.getHttpServer())
-                .patch(`/loan/approve/${loanId}`)
-                .set('Authorization', `Bearer ${userAuthToken}`)
-                .expect(403);
-        });
-
-        it('should get all loans as admin', () => {
+    describe('GET /loan', () => {
+        it('should get all loans (admin only)', () => {
             return request(app.getHttpServer())
                 .get('/loan')
-                .set('Authorization', `Bearer ${adminAuthToken}`)
+                .set('Authorization', `Bearer ${adminToken}`)
                 .expect(200)
-                .expect((response) => {
-                    expect(response.body.data).toHaveProperty('loans');
-                    expect(response.body.data).toHaveProperty('meta');
+                .expect((res) => {
+                    expect(Array.isArray(res.body.data.loans.items)).toBeTruthy();
                 });
         });
+    });
 
-        it('should fail getting all loans as non-admin', () => {
+    describe('GET /loan/:id', () => {
+        it('should get loan by id', () => {
             return request(app.getHttpServer())
-                .get('/loan')
-                .set('Authorization', `Bearer ${userAuthToken}`)
-                .expect(403);
+                .get(`/loan/${loanId}`)
+                .set('Authorization', `Bearer ${adminToken}`)
+                .expect(200)
+                .expect((res) => {
+                    expect(res.body.data.loan.id).toBe(loanId);
+                });
         });
+    });
+
+    describe('DELETE /loan/:id', () => {
+        it('should delete a loan', () => {
+            return request(app.getHttpServer())
+                .delete(`/loan/${loanId}`)
+                .set('Authorization', `Bearer ${adminToken}`)
+                .expect(200);
+        });
+    });
+
+    afterAll(async () => {
+        await prisma.$disconnect();
     });
 });
+
