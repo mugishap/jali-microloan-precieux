@@ -25,7 +25,7 @@ export class LoanController {
         @Req() req: AuthRequest
     ) {
         const loan = await this.loanService.createLoan(req.user.id, dto);
-        return ServerResponse.success("Loan created successfully", { ...loan });
+        return ServerResponse.success("Loan created successfully", { loan });
     }
 
     @Patch("submit/:id")

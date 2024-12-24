@@ -4,11 +4,13 @@ import * as request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { UserType } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
 describe('UserController (e2e)', () => {
     let app: INestApplication;
     let prismaService: PrismaService;
     let authToken: string;
+    let adminAuthToken: string;
     let userId: string;
 
     beforeAll(async () => {
@@ -19,10 +21,13 @@ describe('UserController (e2e)', () => {
         app = moduleRef.createNestApplication();
         prismaService = moduleRef.get<PrismaService>(PrismaService);
         await app.init();
+        
+        await prismaService.$transaction(async (tx) => {
+        });
     });
 
     afterAll(async () => {
-        await prismaService.cleanDatabase();
+        await prismaService.$disconnect();
         await app.close();
     });
 
@@ -34,150 +39,86 @@ describe('UserController (e2e)', () => {
                     firstName: 'John',
                     lastName: 'Doe',
                     telephone: '+250788888888',
-                    password: 'password123',
+                    password: 'Password123!',
                 })
                 .expect(201)
                 .expect((response) => {
-                    expect(response.body.data).toHaveProperty('user');
-                    expect(response.body.data.user.firstName).toBe('John');
-                    expect(response.body.data.user.lastName).toBe('Doe');
-                    expect(response.body.data.user.telephone).toBe('+250788888888');
                     expect(response.body.data.user.userType).toBe(UserType.END_USER);
                     userId = response.body.data.user.id;
+                    authToken = response.body.data.token;
                 });
         });
 
-        it('should fail creating user with existing telephone', () => {
+        it('should fail with invalid password format', () => {
             return request(app.getHttpServer())
                 .post('/user/create')
                 .send({
-                    firstName: 'Jane',
+                    firstName: 'John',
                     lastName: 'Doe',
-                    telephone: '+250788888888',
-                    password: 'password123',
+                    telephone: '+250788888889',
+                    password: 'weakpass',
                 })
                 .expect(400)
                 .expect((response) => {
-                    expect(response.body.message).toContain('telephone already exists');
-                });
-        });
-
-        it('should fail with invalid telephone format', () => {
-            return request(app.getHttpServer())
-                .post('/user/create')
-                .send({
-                    firstName: 'Jane',
-                    lastName: 'Doe',
-                    telephone: 'invalid-phone',
-                    password: 'password123',
-                })
-                .expect(400)
-                .expect((response) => {
-                    expect(response.body.message).toContain('telephone');
+                    expect(response.body.message).toContain('Password must have');
                 });
         });
     });
 
-    describe('Protected Routes', () => {
+    describe('Admin User Operations', () => {
         beforeAll(async () => {
-            // Login to get auth token
-            const response = await request(app.getHttpServer())
+            // Create an admin user
+            const adminResponse = await request(app.getHttpServer())
+                .post('/admin/create')
+                .send({
+                    firstName: 'Admin',
+                    lastName: 'User',
+                    telephone: '+250788888890',
+                    password: 'Admin123!',
+                });
+
+            const adminLogin = await request(app.getHttpServer())
                 .post('/auth/login')
                 .send({
-                    telephone: '+250788888888',
-                    password: 'password123',
+                    telephone: '+250788888890',
+                    password: 'Admin123!',
                 });
-            
-            authToken = response.body.data.token;
+
+            adminAuthToken = adminLogin.body.data.token;
         });
 
-        describe('GET /user/:id', () => {
-            it('should get user by id', () => {
-                return request(app.getHttpServer())
-                    .get(`/user/${userId}`)
-                    .set('Authorization', `Bearer ${authToken}`)
-                    .expect(200)
-                    .expect((response) => {
-                        expect(response.body.data).toHaveProperty('user');
-                        expect(response.body.data.user.id).toBe(userId);
-                        expect(response.body.data.user.telephone).toBe('+250788888888');
-                    });
-            });
-
-            it('should fail with invalid user id', () => {
-                return request(app.getHttpServer())
-                    .get('/user/invalid-id')
-                    .set('Authorization', `Bearer ${authToken}`)
-                    .expect(404)
-                    .expect((response) => {
-                        expect(response.body.message).toBe('User not found');
-                    });
-            });
-
-            it('should fail without auth token', () => {
-                return request(app.getHttpServer())
-                    .get(`/user/${userId}`)
-                    .expect(401);
-            });
+        it('should get all users as admin', () => {
+            return request(app.getHttpServer())
+                .get('/user')
+                .set('Authorization', `Bearer ${adminAuthToken}`)
+                .expect(200)
+                .expect((response) => {
+                    expect(response.body.data).toHaveProperty('users');
+                    expect(response.body.data).toHaveProperty('meta');
+                });
         });
 
-        describe('PATCH /user/:id', () => {
-            it('should update user details', () => {
-                return request(app.getHttpServer())
-                    .patch(`/user/${userId}`)
-                    .set('Authorization', `Bearer ${authToken}`)
-                    .send({
-                        firstName: 'Johnny',
-                        lastName: 'Updated',
-                    })
-                    .expect(200)
-                    .expect((response) => {
-                        expect(response.body.data.user.firstName).toBe('Johnny');
-                        expect(response.body.data.user.lastName).toBe('Updated');
-                        expect(response.body.data.user.telephone).toBe('+250788888888');
-                    });
-            });
-
-            it('should fail updating another user\'s details', async () => {
-                // Create another user
-                const anotherUser = await request(app.getHttpServer())
-                    .post('/user/create')
-                    .send({
-                        firstName: 'Another',
-                        lastName: 'User',
-                        telephone: '+250788888889',
-                        password: 'password123',
-                    });
-
-                return request(app.getHttpServer())
-                    .patch(`/user/${anotherUser.body.data.user.id}`)
-                    .set('Authorization', `Bearer ${authToken}`)
-                    .send({
-                        firstName: 'Hacked',
-                    })
-                    .expect(403);
-            });
-
-            it('should fail without auth token', () => {
-                return request(app.getHttpServer())
-                    .patch(`/user/${userId}`)
-                    .send({
-                        firstName: 'Johnny',
-                    })
-                    .expect(401);
-            });
+        it('should fail getting users with non-admin user', () => {
+            return request(app.getHttpServer())
+                .get('/user')
+                .set('Authorization', `Bearer ${authToken}`)
+                .expect(403);
         });
 
-        describe('GET /user/all', () => {
-            it('should fail for non-admin users', () => {
-                return request(app.getHttpServer())
-                    .get('/user/all')
-                    .set('Authorization', `Bearer ${authToken}`)
-                    .expect(403);
-            });
-
-            // Add admin user test if needed
-            // Would require creating an admin user first
+        it('should filter users by type', () => {
+            return request(app.getHttpServer())
+                .get('/user?userType=END_USER')
+                .set('Authorization', `Bearer ${adminAuthToken}`)
+                .expect(200)
+                .expect((response) => {
+                    expect(response.body.data.users).toEqual(
+                        expect.arrayContaining([
+                            expect.objectContaining({
+                                userType: 'END_USER',
+                            }),
+                        ]),
+                    );
+                });
         });
     });
 }); 

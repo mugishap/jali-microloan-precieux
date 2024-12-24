@@ -14,6 +14,7 @@ export class AuthService {
     ) { }
 
     async login(dto: LoginDTO) {
+        if (!dto.telephone || !dto.password) throw new HttpException("Invalid telephone or password", 400)
         const user = await this.userService.findByTelephone(dto.telephone)
         if (!user) throw new HttpException("Invalid telephone or password", 401)
         const match = compareSync(dto.password, user.password)
