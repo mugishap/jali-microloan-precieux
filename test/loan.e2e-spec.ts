@@ -51,7 +51,7 @@ describe('LoanController (e2e)', () => {
             });
         userToken = userLoginResponse.body.data.token;
 
-        await prisma.cleanDatabase(); // Clean database before tests
+        await prisma.cleanDatabase(); 
     });
 
     describe('POST /loan/create', () => {
