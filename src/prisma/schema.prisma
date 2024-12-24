@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserType {
+  ADMIN
+  END_USER
+
+  @@map("user_types")
+}
+
+enum LoanStatus {
+  PENDING
+  SUBMITTED
+  APPROVED
+  DECLINED
+
+  @@map("loan_status")
+}
+
+model User {
+  id              String   @id @default(uuid())
+  firstName       String   @map("first_name")
+  lastName        String   @map("last_name")
+  telephone       String   @unique
+  password        String
+  userType        UserType @map("user_type")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  loans_requested Loan[]
+
+  @@map("users")
+}
+
+model Loan {
+  id            String     @id @default(uuid())
+  user          User       @relation(fields: [userId], references: [id])
+  userId        String     @map("user_id")
+  amount        Int        @map("amount")
+  monthlyIncome Int        @map("monthly_income")
+  status        LoanStatus @default(PENDING)
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  @@map("loans")
+}
